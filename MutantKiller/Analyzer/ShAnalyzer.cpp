@@ -19,7 +19,7 @@ bool MutantAnalyzer::GetMutationPair()
 		}
 	}
 	LogT("Need analyze function count : %d\n", CallerVector.size());
-	
+
 	Log("Classifying mutation function...\n");
 	int count = 0;
 	for (auto c : CallerVector)
@@ -43,7 +43,7 @@ bool MutantAnalyzer::GetMutationPair()
 		count++;
 	}
 
-	ULONG MutationCount = count;
+	MutationCount = count;
 	if (MutationCount == 0)
 	{
 		ErrorHandler("Can't find mutation function\n", -1);
@@ -106,23 +106,101 @@ bool MutantAnalyzer::GetMutationPair()
 		}
 
 #ifdef _WIN64
-		
+
 		auto KeyAddress = (DWORD64*)((DWORD64)result[0] + (DWORD64)result[1]);
 
 		DWORD64 MutationResult = GetMutationResult(KeyAddress, (DWORD64)result[2]);
 		MutationFinal[i].first = MutationPair[i].first;
 		MutationFinal[i].second = (PVOID)MutationResult;
 #else
-		auto KeyAddress = (DWORD*)((DWORD)result[0] + (DWORD)result[1]);
+		
+		auto KeyAddress = (DWORD*)(((DWORD)result[0] + BaseDiff) + (DWORD)result[1]);
 		DWORD MutationResult = GetMutationResult(KeyAddress, (DWORD)result[2]);
 		MutationFinal[i].first = MutationPair[i].first;
 		MutationFinal[i].second = (DWORD*)MutationResult;
 #endif
-		Log("[+] Caller : %p : Result : %p\n", MutationFinal[i].first, MutationFinal[i].second);
 	}
 	
+	delete[] MutationPair;
+	return true;
+}
 
-	return false;
+void MutantAnalyzer::SetMutationMap()
+{
+	Log("Set Mutation..\n");
+
+	std::multiset<std::pair<std::string, std::string>> SymbolSet;
+	MuaCountMap.clear();
+	MuaCallerMap.clear();
+	MuaDllMap.clear();
+	DllNameList.clear();
+	ImportCount = 0;
+
+	std::string SymbolName;
+
+	for (int i = 0; i < MutationCount; i++)
+	{
+		std::pair<std::string, char*> SymName;
+
+		if (ProcessId == SYSTEM_PROCESS)
+		{
+			SymName = GetKernelSymbolName(MutationFinal[i].second);
+		}
+		else
+		{
+			SymName = GetSymbolName(MutationFinal[i].second);
+			if (SymName.first != "NULL")
+			{
+				SymbolName = SymName.second;
+				SymbolSet.insert(make_pair(SymName.first, SymbolName));
+				MuaCallerMap.insert(make_pair(SymbolName, MutationFinal[i].first));
+				SymbolName.clear();
+			}
+		}
+	}
+
+	std::string PreValue;
+
+	for (auto v : SymbolSet)
+	{
+		if (PreValue == v.second)
+		{
+			continue;
+		}
+		PreValue = v.second;
+		MuaDllMap.insert(make_pair(v.first, v.second));
+	}
+
+	for (auto v : MuaDllMap)
+	{
+		MuaCountMap.insert(make_pair(v.first, MuaDllMap.count(v.first)));
+	}
+
+	for (auto v : MuaCountMap)
+	{
+		DllNameList.push_back(v.first);
+		ImportCount += v.second;
+	}
+
+#if LOGGING
+	for (auto c : MuaCallerMap)
+	{
+		Log("%s : %p\n", c.first.c_str(), c.second);
+	}
+
+	for (auto d : MuaDllMap)
+	{
+		Log("%s : %s\n", d.first.c_str(), d.second.c_str());
+	}
+#endif
+	Log("Data analysis complete  (DLL Name : Import count)\n");
+	for (auto c : MuaCountMap)
+	{
+		Green;
+		LogT("%s : %d\n", c.first.c_str(), c.second);
+		Gray;
+	}
+
 }
 
 void MutantAnalyzer::MutationCalculator(PVOID StartAddress, ULONG Size, PVOID Result)
@@ -404,6 +482,8 @@ DWORD MutantAnalyzer::GetMutationResult32(DWORD* Address, DWORD Offset)
 
 bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 {
+	ProcessId = Pid;
+
 	Log("Getting dump file handle...\n");
 	DumpHandle = CreateFile(Path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (DumpHandle == INVALID_HANDLE_VALUE)
@@ -455,7 +535,9 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	auto DosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(TempFileVa);
 	auto NtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(CalcOffset(DosHeader, DosHeader->e_lfanew));
 	NtHeadersPtr = NtHeaders;
-
+	Red;
+	Log("%X\n", NtHeaders->OptionalHeader.ImageBase);
+	Gray;
 	if (DosHeader->e_magic != IMAGE_DOS_SIGNATURE || NtHeaders->Signature != IMAGE_NT_SIGNATURE)
 	{
 		ErrorHandler("Invalid PE format", -1);
@@ -469,11 +551,15 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 		if (GetLastError() == ERROR_INVALID_ADDRESS || GetLastError() == ERROR_INVALID_PARAMETER)
 		{
 			RelocVa = VirtualAlloc(nullptr, NtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+#ifdef _WIN64
+			BaseDiff = (DWORD64)RelocVa - NtHeaders->OptionalHeader.ImageBase
+#else
+			BaseDiff = (DWORD)RelocVa - NtHeaders->OptionalHeader.ImageBase;
+#endif
 		}
 		else
 		{
 			ErrorHandler("Can't allocate memory", GetLastError());
-			system("pause");
 			return false;
 		}
 	}
@@ -482,6 +568,8 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	RelocVaEnd = CalcOffset(RelocVa, NtHeaders->OptionalHeader.SizeOfImage);
 	InfoLog("Reloc V.A", RelocVa);
 	InfoLog("Reloc V.A End", RelocVaEnd);
+	InfoLog("Original", (PVOID)NtHeaders->OptionalHeader.ImageBase);
+	InfoLog("Diff", (PVOID)BaseDiff);
 
 
 
@@ -506,15 +594,27 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	ZydisFormatterInit(&ZyFormatter, ZYDIS_FORMATTER_STYLE_INTEL);
 
 	Blue;
-	Log("Complete Initialize Data\n\n");
+	Log("Initialize Data Complete\n\n");
 	Gray;
 	return true;
 }
 
 void MutantAnalyzer::Analyzer()
 {
-	if (GetMutationPair())
+	if (GetMutationPair() == false)
 	{
+		return;
+	}
+	Green;
+	LogT("Calculation Complete\n");
+	Gray;
+	
+	if (SymbolInit() == true)
+	{
+#ifdef _WIN64
+		SymbolDownload();
+#endif
+		SetMutationMap();
 
 	}
 }
@@ -549,4 +649,145 @@ char* MutantAnalyzer::PatternScan(const char* Pattern, const char* Mask, char* B
 		}
 	}
 	return nullptr;
+}
+
+ShSymbols::~ShSymbols()
+{
+	if (ProcessHandle != nullptr)
+	{
+		SymCleanup(ProcessHandle);
+	}
+}
+
+bool ShSymbols::SymbolInit(ULONG Pid)
+{
+	if (Pid)
+	{
+		ProcessId = Pid;
+		ProcessHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, false, ProcessId);
+	}
+	Log("Setting symbol information\n");
+	bool bInvadeProcess = ProcessId == 4 ? false : true;
+	GetCurrentDirectory(MAX_PATH, SymbolDir);
+	if (SymbolDir == nullptr)
+	{
+		ErrorHandler("Can't get current directory", GetLastError());
+		return false;
+	}
+
+	strcat(SymbolDir, "\\Symbols\\");
+	auto SymbolPath = std::filesystem::path(SymbolDir);
+	if (std::filesystem::exists(SymbolPath) == false)
+	{
+		ErrorHandler("Can't find path", -1);
+		return false;
+	}
+
+	strcpy(SymchkArguments, "/s SRV*");
+	strcat(SymchkArguments, SymbolDir);
+	strcat(SymchkArguments, "*http://msdl.microsoft.com/download/symbols");
+
+	if (bInvadeProcess == false)
+	{
+		SymSetOptions(SYMOPT_EXACT_SYMBOLS | SYMOPT_CASE_INSENSITIVE);
+	}
+	else
+	{
+		SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+	}
+
+	if (ProcessHandle == nullptr || ProcessHandle == INVALID_HANDLE_VALUE)
+	{
+		ErrorHandler("Invalid process handle", -1);
+		return false;
+	}
+
+	if (SymInitialize(ProcessHandle, SymbolDir, bInvadeProcess) == false)
+	{
+		ErrorHandler("Can't initialize symbol", GetLastError());
+		return false;
+	}
+	
+	return true;
+}
+
+void ShSymbols::SymbolDownload()
+{
+	if (strlen(SymbolDir) != 0)
+	{
+		bool bFound = false;
+		Log("Downloading Symbols...\n");
+		std::string CommandLine = std::string(SymbolDir) + "symchk.exe C:\\Windows\\system32\\ntoskrnl.exe " + std::string(SymchkArguments);
+		WinExec(CommandLine.c_str(), SW_HIDE);
+		while (true)
+		{
+			if (bFound)
+			{
+				break;
+			}
+			auto SymPath = std::filesystem::path(SymbolDir);
+			for (auto& p : std::filesystem::recursive_directory_iterator(SymPath))
+			{
+				if (std::filesystem::is_directory(p.path()) == false)
+				{
+					if (p.path().extension() == ".pdb")
+					{
+						Sleep(1000);
+						bFound = true;
+						break;
+					}
+				}
+			}
+		}
+		LogT("Donwload Complete\n");
+	}
+	else
+	{
+		ErrorHandler("Can't symbol download\n", -1);
+	}
+}
+
+std::pair<std::string, char*> ShSymbols::GetKernelSymbolName(PVOID Address)
+{
+	std::pair<std::string, char*> Result;
+
+	return Result;
+}
+
+std::pair<std::string, char*> ShSymbols::GetSymbolName(PVOID Address)
+{
+	std::pair<std::string, char*> Result;
+#ifdef _WIN64
+	DWORD64 TargetAddress = (DWORD64)Address;
+	DWORD64 Displacement = 0;
+#else
+	DWORD TargetAddress = (DWORD)Address;
+	DWORD Displacement = 0;
+#endif
+
+	PIMAGEHLP_SYMBOL pSymbol = nullptr;
+	IMAGEHLP_MODULE SymModule = { 0, };
+
+	char Buffer[sizeof(IMAGEHLP_SYMBOL) + MAX_SYM_NAME * sizeof(CHAR)] = { 0, };
+	pSymbol = (PIMAGEHLP_SYMBOL)Buffer;
+
+	pSymbol->SizeOfStruct = sizeof(IMAGEHLP_SYMBOL);
+	pSymbol->MaxNameLength = MAX_PATH;
+
+	SymModule.SizeOfStruct = sizeof(IMAGEHLP_MODULE);
+
+	bool result = SymGetModuleInfo(ProcessHandle, TargetAddress, &SymModule);
+	if (result == true)
+	{
+		HANDLE FileHandle = CreateFile(SymModule.ImageName, GENERIC_ALL, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		SymLoadModuleEx(ProcessHandle, FileHandle, nullptr, nullptr, SymModule.BaseOfImage, SymModule.ImageSize, nullptr, 0);
+		SymGetSymFromAddr(ProcessHandle, TargetAddress, &Displacement, pSymbol);
+		auto Path = std::filesystem::path(SymModule.ImageName);
+		std::string DllName = Path.filename().string();
+		Result.first = DllName;
+		Result.second = pSymbol->Name;
+		return Result;
+	}
+	Result.first = "NULL";
+	return Result;
 }

@@ -1,6 +1,8 @@
 #ifndef _SHINC_H_
 #define _SHINC_H_
 
+#pragma warning(disable:4996)
+
 #include <stdio.h>
 #include <Windows.h>
 #include <DbgHelp.h>
@@ -17,5 +19,6 @@
 
 #include "ShMKill.h"
 #include "Analyzer/ShAnalyzer.h"
+
 
 #endif // !_SHINC_H_

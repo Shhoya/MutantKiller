@@ -3,7 +3,25 @@
 
 #pragma comment(lib,"dbghelp.lib")
 
-class MutantAnalyzer
+#define SYSTEM_PROCESS 4
+
+class ShSymbols
+{
+public:
+	~ShSymbols();
+	bool SymbolInit(ULONG Pid = 0);
+	void SymbolDownload();
+	std::pair<std::string, char*> GetKernelSymbolName(PVOID Address);
+	std::pair<std::string, char*> GetSymbolName(PVOID Address);
+
+public:
+	HANDLE ProcessHandle = nullptr;
+	ULONG ProcessId = 0;
+	char SymbolDir[MAX_PATH] = { 0, };
+	char SymchkArguments[MAX_PATH] = { 0, };
+};
+
+class MutantAnalyzer : public ShSymbols
 {
 #ifdef _WIN64
 #define GetEndAddress GetEndAddress64
@@ -42,18 +60,19 @@ private:
 	ZydisFormatter ZyFormatter;
 
 	HANDLE DumpHandle = nullptr;
-	HANDLE ProcessHandle = nullptr;
 
 	PIMAGE_NT_HEADERS NtHeadersPtr = nullptr;
 
 	PVOID RelocVa = nullptr;
 	PVOID RelocVaEnd = nullptr;
+	DWORD BaseDiff = 0;
 	PVOID StartVa = nullptr;
 
 	PVOID TempFileVa = nullptr;
 
 	ULONG RawDataSize = 0;
 
+	ULONG ImportCount = 0;
 	ULONG ImportDescSize = 0;
 	ULONG ImportThunkSize = 0;
 	ULONG ImportDllNameSize = 0;
@@ -63,13 +82,15 @@ private:
 	ULONG VirtualAddress = 0;
 	ULONG VirtualSize = 0;
 
+	ULONG MutationCount = 0;
 	bool bReturn = false;
 
 	std::vector<IMAGE_SECTION_HEADER> SectionVector;
 	std::pair<PVOID, PVOID>* MutationFinal = nullptr;
+	
 	std::unordered_map<std::string, int> MuaCountMap;
 	std::multimap<std::string, std::string> MuaDllMap;
-	std::multimap<std::string, void*> MuaCallerMap;
+	std::multimap<std::string, PVOID> MuaCallerMap;
 	std::vector<std::string> DllNameList;
 };
 
