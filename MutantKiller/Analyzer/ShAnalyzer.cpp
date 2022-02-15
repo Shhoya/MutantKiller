@@ -118,10 +118,7 @@ bool MutantAnalyzer::GetMutationPair()
 		MutationFinal[i].first = MutationPair[i].first;
 		MutationFinal[i].second = (DWORD*)MutationResult;
 #endif
-
-
-
-
+		Log("[+] Caller : %p : Result : %p\n", MutationFinal[i].first, MutationFinal[i].second);
 	}
 	
 
@@ -469,7 +466,7 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	RelocVa = VirtualAlloc((PVOID)NtHeaders->OptionalHeader.ImageBase, NtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	if (RelocVa == nullptr)
 	{
-		if (GetLastError() == ERROR_INVALID_ADDRESS)
+		if (GetLastError() == ERROR_INVALID_ADDRESS || GetLastError() == ERROR_INVALID_PARAMETER)
 		{
 			RelocVa = VirtualAlloc(nullptr, NtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 		}
