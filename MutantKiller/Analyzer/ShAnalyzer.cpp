@@ -1,5 +1,7 @@
 #include "../ShInc.h"
 
+#define LOGGING 0
+
 bool MutantAnalyzer::GetMutationPair()
 {
 	Log("Parsing caller...\n");
@@ -16,8 +18,9 @@ bool MutantAnalyzer::GetMutationPair()
 			CallerVector.push_back(c);
 		}
 	}
-	LogT("Need analyze function count : %d", CallerVector.size());
+	LogT("Need analyze function count : %d\n", CallerVector.size());
 	
+	Log("Classifying mutation function...\n");
 	int count = 0;
 	for (auto c : CallerVector)
 	{
@@ -41,11 +44,196 @@ bool MutantAnalyzer::GetMutationPair()
 	}
 
 	ULONG MutationCount = count;
-	
-	
+	if (MutationCount == 0)
+	{
+		ErrorHandler("Can't find mutation function\n", -1);
+		return false;
+	}
+
+	Green;
+	LogT("Known mutation function count : %d\n", MutationCount);
+	Gray;
+
+	MutationFinal = new std::pair<PVOID, PVOID>[MutationCount];
+
+	Log("Calculating mutation...\n");
+	for (int i = 0; i < MutationCount; i++)
+	{
+		int EndMutation = 0;
+		PVOID result[3] = { nullptr, };
+		auto NextRegion = MutationPair[i].second;
+#ifdef _WIN64
+		DWORD64 StartAddress = (DWORD64)MutationPair[i].second;
+#else
+		DWORD StartAddress = (DWORD)MutationPair[i].second;
+#endif
+
+#if LOGGING
+		Log("Caller : %p\tMutation Start : %p\n", MutationPair[i].first, MutationPair[i].second);
+#endif
+		PVOID JmpAddress = GetEndAddress(StartAddress);
+		DWORD RegionSize = (DWORD64)CalcOffset(JmpAddress, 5) - (DWORD64)MutationPair[i].second;
+		while (true)
+		{
+			int offset = 0;
+#ifdef _WIN64
+			DWORD64 TempNext = (DWORD64)NextRegion;
+#else
+			DWORD TempNext = (DWORD)NextRegion;
+#endif
+			JmpAddress = GetEndAddress((DWORD64)NextRegion);
+
+			if (JmpAddress == (PVOID)-1 || JmpAddress == nullptr) { break; }
+			if (bReturn == true)
+			{
+#ifdef _WIN64
+				DWORD RegionSize = (DWORD64)JmpAddress - (DWORD64)NextRegion;
+#else
+				DWORD RegionSize = (DWORD)JmpAddress - (DWORD)TempNext;
+#endif
+				MutationCalculator(NextRegion, RegionSize, result);
+				bReturn = false;
+				break;
+			}
+#ifdef _WIN64
+			DWORD RegionSize = (DWORD64)CalcOffset(JmpAddress, 5) - (DWORD64)NextRegion;
+#else
+			DWORD RegionSize = (DWORD)CalcOffset(JmpAddress, 5) - (DWORD)TempNext;
+#endif
+			MutationCalculator(NextRegion, RegionSize, result);
+			memcpy(&offset, CalcOffset(JmpAddress, 1), 4);
+			NextRegion = CalcOffset(JmpAddress, offset + 5);
+		}
+
+#ifdef _WIN64
+		
+		auto KeyAddress = (DWORD64*)((DWORD64)result[0] + (DWORD64)result[1]);
+
+		DWORD64 MutationResult = GetMutationResult(KeyAddress, (DWORD64)result[2]);
+		MutationFinal[i].first = MutationPair[i].first;
+		MutationFinal[i].second = (PVOID)MutationResult;
+#else
+		auto KeyAddress = (DWORD*)((DWORD)result[0] + (DWORD)result[1]);
+		DWORD MutationResult = GetMutationResult(KeyAddress, (DWORD)result[2]);
+		MutationFinal[i].first = MutationPair[i].first;
+		MutationFinal[i].second = (DWORD*)MutationResult;
+#endif
+
+
+
+
+	}
 	
 
 	return false;
+}
+
+void MutantAnalyzer::MutationCalculator(PVOID StartAddress, ULONG Size, PVOID Result)
+{
+	int count = 0;
+	std::string Disassm;
+	auto Buffer = new BYTE[Size];
+	memcpy(Buffer, (PVOID)StartAddress, Size);
+#ifdef _WIN64
+	DWORD64 Address = (DWORD64)StartAddress;
+	DWORD64* result = (DWORD64*)Result;
+#else
+	DWORD Address = (DWORD)StartAddress;
+	DWORD* result = (DWORD*)Result;
+
+#endif
+	ZyanUSize Offset = 0;
+	const ZyanUSize Length = Size;
+	ZydisDecodedInstruction Instruction;
+	while (ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&ZyDecoder, Buffer + Offset, Length - Offset, &Instruction)))
+	{
+		Disassm.clear();
+		char TempBuffer[256] = { 0, };
+		ZydisFormatterFormatInstruction(&ZyFormatter, &Instruction, TempBuffer, sizeof(TempBuffer), Address);
+
+		Disassm = std::string(TempBuffer);
+#ifdef _WIN64
+		if (Disassm.find("lea", 0) != std::string::npos && Instruction.length == 7)
+		{
+			if (Disassm.find("[0x0000", 0) != std::string::npos)
+			{
+				DWORD RelOffset = 0;
+				memcpy(&RelOffset, (PVOID)(Address + 3), 4);
+				DWORD64 RelAddress = (DWORD64)CalcOffset((PVOID)Address, RelOffset + 7);
+				result[0] = RelAddress;
+			}
+			else
+			{
+				memcpy(&result[2], (PVOID)(Address + 3), 4);
+			}
+			count++;
+#if LOGGING
+			Green;
+			LogT("%s\n", TempBuffer);
+			Gray;
+#endif
+		}
+
+		if (Disassm.find("mov", 0) != std::string::npos && Disassm.find("[", 0) != std::string::npos && Instruction.length ==7)
+		{
+			memcpy(&result[1], (PVOID)(Address + 3), 4);
+			count++;
+#if LOGGING
+			Green;
+			LogT("%s\n", TempBuffer);
+			Gray;
+#endif
+
+		}
+#else
+		if (Disassm.find("mov",0) != std::string::npos && Instruction.length == 5)
+		{
+			DWORD RelAddress = 0;
+			memcpy(&RelAddress, (PVOID)(Address + 1), 4);
+
+			if (NtHeadersPtr->OptionalHeader.ImageBase < RelAddress && NtHeadersPtr->OptionalHeader.ImageBase + NtHeadersPtr->OptionalHeader.SizeOfImage > RelAddress)
+			{
+				result[0] = RelAddress;
+				count++;
+#if LOGGING
+				Green;
+				LogT("%s\n", TempBuffer);
+				Gray;
+#endif
+			}
+		}
+
+		if (Disassm.find("mov", 0) != std::string::npos && Disassm.find("[", 0) != std::string::npos && Instruction.length == 6)
+		{
+			DWORD RelAddress = 0;
+			memcpy(&RelAddress, (PVOID)(Address + 2), 4);
+			result[1] = RelAddress;
+			count++;
+#if LOGGING
+			Green;
+			LogT("%s\n", TempBuffer);
+			Gray;
+#endif
+		}
+
+		if (Disassm.find("lea", 0) != std::string::npos && Disassm.find("[", 0) != std::string::npos && Instruction.length == 6)
+		{
+			DWORD RelAddress = 0;
+			memcpy(&RelAddress, (PVOID)(Address + 2), 4);
+			result[2] = RelAddress;
+			count++;
+#if LOGGING
+			Green;
+			LogT("%s\n", TempBuffer);
+			Gray;
+#endif
+		}
+#endif
+		Offset += Instruction.length;
+		Address += Instruction.length;
+	}
+
+	delete[] Buffer;
 }
 
 std::vector<PVOID> MutantAnalyzer::GetCallerAddress()
@@ -80,6 +268,141 @@ std::vector<PVOID> MutantAnalyzer::GetCallerAddress()
 		ReadSize = RawDataSize - Offset;
 	}
 	return result;
+}
+
+PVOID MutantAnalyzer::GetEndAddress64(DWORD64 StartAddress)
+{
+	std::string Disassm;
+	auto Buffer = new BYTE[0x40];
+	memcpy(Buffer, (PVOID)StartAddress, 0x40);
+	bool bLastupdated = false;
+	ZyanUSize Offset = 0;
+	const ZyanUSize Length = 0x40;
+	ZydisDecodedInstruction Instruction;
+	while (ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&ZyDecoder, Buffer + Offset, Length - Offset, &Instruction)))
+	{
+		Disassm.clear();
+		char TempBuffer[256] = { 0, };
+		ZydisFormatterFormatInstruction(&ZyFormatter, &Instruction, TempBuffer, sizeof(TempBuffer), StartAddress);
+
+		Disassm = std::string(TempBuffer);
+		if (Disassm.find("mov",0) != std::string::npos && Instruction.length == 7)
+		{
+			bLastupdated = true;
+		}
+		if (Disassm.find("lea", 0) != std::string::npos && Instruction.length == 7)
+		{
+			bLastupdated = true;
+		}
+		if (Disassm.find("ret",0) != std::string::npos)
+		{
+			if (bLastupdated == true)
+			{
+				bReturn = true;
+				delete[] Buffer;
+				return (PVOID)StartAddress;
+			}
+			delete[] Buffer;
+			return (PVOID)-1;
+		}
+
+		if (Disassm.find("jmp", 0) != std::string::npos)
+		{
+			BYTE FirstByte[1] = { 0, };
+			memcpy(FirstByte, (PVOID)StartAddress, 1);
+			if (FirstByte[0] == 0xE9)
+			{
+				delete[] Buffer;
+				return (PVOID)StartAddress;
+			}
+		}
+		Offset += Instruction.length;
+		StartAddress += Instruction.length;
+	}
+
+	delete[] Buffer;
+	return nullptr;
+}
+
+PVOID MutantAnalyzer::GetEndAddress32(DWORD StartAddress)
+{
+	std::string Disassm;
+	auto Buffer = new BYTE[0x40];
+	memcpy(Buffer, (PVOID)StartAddress, 0x40);
+	bool bLastupdated = false;
+	ZyanUSize Offset = 0;
+	const ZyanUSize Length = 0x40;
+	ZydisDecodedInstruction Instruction;
+	while (ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&ZyDecoder, Buffer + Offset, Length - Offset, &Instruction)))
+	{
+		Disassm.clear();
+		char TempBuffer[256] = { 0, };
+		ZydisFormatterFormatInstruction(&ZyFormatter, &Instruction, TempBuffer, sizeof(TempBuffer), StartAddress);
+
+		Disassm = std::string(TempBuffer);
+		if (Disassm.find("mov", 0) != std::string::npos && Instruction.length == 7)
+		{
+			bLastupdated = true;
+		}
+		if (Disassm.find("lea", 0) != std::string::npos && Instruction.length == 7)
+		{
+			bLastupdated = true;
+		}
+		if (Disassm.find("ret", 0) != std::string::npos)
+		{
+			if (bLastupdated == true)
+			{
+				bReturn = true;
+				delete[] Buffer;
+				return (PVOID)StartAddress;
+			}
+			delete[] Buffer;
+			return (PVOID)-1;
+		}
+
+		if (Disassm.find("jmp", 0) != std::string::npos)
+		{
+			BYTE FirstByte[1] = { 0, };
+			memcpy(FirstByte, (PVOID)StartAddress, 1);
+			if (FirstByte[0] == 0xE9)
+			{
+				delete[] Buffer;
+				return (PVOID)StartAddress;
+			}
+		}
+		Offset += Instruction.length;
+		StartAddress += Instruction.length;
+	}
+
+	delete[] Buffer;
+	return nullptr;
+}
+
+DWORD64 MutantAnalyzer::GetMutationResult64(DWORD64* Address, DWORD64 Offset)
+{
+	DWORD64 Result = 0;
+	__try {
+		
+		Result = *Address + Offset;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		Result = 0;
+	}
+	return Result;
+}
+
+DWORD MutantAnalyzer::GetMutationResult32(DWORD* Address, DWORD Offset)
+{
+	DWORD Result = 0;
+	__try {
+		Result = *Address + Offset;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		Result = 0;
+	}
+	return Result;
 }
 
 bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
@@ -134,7 +457,8 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	Log("Checking signature...\n");
 	auto DosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(TempFileVa);
 	auto NtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(CalcOffset(DosHeader, DosHeader->e_lfanew));
-	
+	NtHeadersPtr = NtHeaders;
+
 	if (DosHeader->e_magic != IMAGE_DOS_SIGNATURE || NtHeaders->Signature != IMAGE_NT_SIGNATURE)
 	{
 		ErrorHandler("Invalid PE format", -1);
@@ -145,13 +469,24 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	RelocVa = VirtualAlloc((PVOID)NtHeaders->OptionalHeader.ImageBase, NtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 	if (RelocVa == nullptr)
 	{
-		ErrorHandler("Can't allocate memory", GetLastError());
-		return false;
+		if (GetLastError() == ERROR_INVALID_ADDRESS)
+		{
+			RelocVa = VirtualAlloc(nullptr, NtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+		}
+		else
+		{
+			ErrorHandler("Can't allocate memory", GetLastError());
+			system("pause");
+			return false;
+		}
 	}
-	InfoLog("Reloc V.A", RelocVa);
 
 
 	RelocVaEnd = CalcOffset(RelocVa, NtHeaders->OptionalHeader.SizeOfImage);
+	InfoLog("Reloc V.A", RelocVa);
+	InfoLog("Reloc V.A End", RelocVaEnd);
+
+
 
 	memcpy(RelocVa, TempFileVa, NtHeaders->FileHeader.SizeOfOptionalHeader);
 	PIMAGE_SECTION_HEADER SectionHeader = IMAGE_FIRST_SECTION(NtHeaders);
@@ -165,6 +500,13 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 			SectionVector.push_back(SectionHeader[i]);
 		}
 	}
+
+#ifdef _WIN64
+	ZydisDecoderInit(&ZyDecoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_ADDRESS_WIDTH_64);
+#else
+	ZydisDecoderInit(&ZyDecoder, ZYDIS_MACHINE_MODE_LONG_COMPAT_32, ZYDIS_ADDRESS_WIDTH_32);
+#endif
+	ZydisFormatterInit(&ZyFormatter, ZYDIS_FORMATTER_STYLE_INTEL);
 
 	Blue;
 	Log("Complete Initialize Data\n\n");
@@ -180,7 +522,7 @@ void MutantAnalyzer::Analyzer()
 	}
 }
 
-PVOID MutantAnalyzer::CalcOffset(PVOID Address, ULONG Offset, bool bMinus)
+PVOID MutantAnalyzer::CalcOffset(PVOID Address, int Offset, bool bMinus)
 {
 	if (bMinus) {
 		return (PVOID)((DWORD64)Address - Offset);

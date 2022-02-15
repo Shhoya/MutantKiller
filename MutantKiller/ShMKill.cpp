@@ -4,7 +4,7 @@
 
 int main(int argc, char* argv[])
 {
-	system("mode con lines=-1 cols=123");
+	system("mode con cols=123");
 	PrintLogo();
 	if (argc != 3)
 	{
@@ -12,7 +12,7 @@ int main(int argc, char* argv[])
 		return -1;
 	}
 
-	MutantAnalyzer* MuA = new MutantAnalyzer();
+	auto MuA = new MutantAnalyzer();
 	if (MuA->InitializeData(argv[1], atoi(argv[2])) == false)
 	{
 		ErrLog("Can't initialize\n");
@@ -110,7 +110,7 @@ void InfoLog(const char* msg, PVOID Address)
 		sprintf(FullMsg, "%s : %p",msg, Address);
 	}
 	Green;
-	ErrLogT("%s\n", FullMsg);
+	LogT("%s\n", FullMsg);
 	Gray;
 	delete[] FullMsg;
 }

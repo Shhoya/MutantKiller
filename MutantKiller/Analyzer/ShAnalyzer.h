@@ -5,26 +5,46 @@
 
 class MutantAnalyzer
 {
+#ifdef _WIN64
+#define GetEndAddress GetEndAddress64
+#define GetMutationResult GetMutationResult64 
+#else
+#define GetEndAddress GetEndAddress32
+#define GetMutationResult GetMutationResult32
+#endif
+
+
 public:
 	bool GetMutationPair();
 	void SetMutationMap();
 	bool IsMutationFunction(PVOID TargetAddress, ULONG Size);
-	int MutationCalculator(PVOID StartAddress, ULONG Size, PVOID Result);
+	void MutationCalculator(PVOID StartAddress, ULONG Size, PVOID Result);
 
 	void SetFixData();
 	bool FixDataAlloc();
-
+	
 	std::vector<PVOID> GetCallerAddress();
+
+	PVOID GetEndAddress64(DWORD64 StartAddress);
+	PVOID GetEndAddress32(DWORD StartAddress);
+	DWORD64 GetMutationResult64(DWORD64* Address, DWORD64 Offset);
+	DWORD GetMutationResult32(DWORD* Address, DWORD Offset);
+
 
 	bool InitializeData(std::string Path, int Pid);
 	void Analyzer();
 
-	PVOID CalcOffset(PVOID Address, ULONG Offset, bool bMinus = false);
+	PVOID CalcOffset(PVOID Address, int Offset, bool bMinus = false);
 	char* PatternScan(const char* Pattern, const char* Mask, char* Begin, int Size);
 
 private:
+	ZydisDecoder ZyDecoder;
+	ZydisFormatter ZyFormatter;
+
 	HANDLE DumpHandle = nullptr;
 	HANDLE ProcessHandle = nullptr;
+
+	PIMAGE_NT_HEADERS NtHeadersPtr = nullptr;
 
 	PVOID RelocVa = nullptr;
 	PVOID RelocVaEnd = nullptr;
@@ -43,7 +63,10 @@ private:
 	ULONG VirtualAddress = 0;
 	ULONG VirtualSize = 0;
 
+	bool bReturn = false;
+
 	std::vector<IMAGE_SECTION_HEADER> SectionVector;
+	std::pair<PVOID, PVOID>* MutationFinal = nullptr;
 	std::unordered_map<std::string, int> MuaCountMap;
 	std::multimap<std::string, std::string> MuaDllMap;
 	std::multimap<std::string, void*> MuaCallerMap;
