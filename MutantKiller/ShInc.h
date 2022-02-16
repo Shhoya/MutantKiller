@@ -8,6 +8,7 @@
 #include <DbgHelp.h>
 #include <iostream>
 #include <filesystem>
+#include <fstream>
 #include <vector>
 #include <map>
 #include <unordered_map>

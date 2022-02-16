@@ -1,13 +1,18 @@
 #include "../ShInc.h"
 
 #define LOGGING 0
+#ifdef _WIN64
+#define ALIGNVALUE 8
+#else
+#define ALIGNVALUE 4
+#endif
 
 bool MutantAnalyzer::GetMutationPair()
 {
 	Log("Parsing caller...\n");
 	std::vector<PVOID> CallerVector;
 
-	auto MutationPair = new std::pair<PVOID, PVOID>[0x1000];
+	
 	for (auto s : SectionVector)
 	{
 		StartVa = CalcOffset(RelocVa, s.VirtualAddress);
@@ -18,9 +23,12 @@ bool MutantAnalyzer::GetMutationPair()
 			CallerVector.push_back(c);
 		}
 	}
+
 	LogT("Need analyze function count : %d\n", CallerVector.size());
+	auto MutationPair = new std::pair<PVOID, PVOID>[CallerVector.size()/4];
 
 	Log("Classifying mutation function...\n");
+
 	int count = 0;
 	for (auto c : CallerVector)
 	{
@@ -311,6 +319,148 @@ void MutantAnalyzer::MutationCalculator(PVOID StartAddress, ULONG Size, PVOID Re
 	delete[] Buffer;
 }
 
+void MutantAnalyzer::SetFixData()
+{
+	Log("Setting fix data...\n");
+
+	ULONG Result = 0;
+	ULONG StringSize = 0;
+	ImportDescSize = (DllNameList.size() + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
+	ImportThunkSize = ((DllNameList.size() * 8) + (ImportCount * 8)) * 2;
+	for (auto d : DllNameList)
+	{
+		StringSize += d.length() + 1;
+		ImportDllNameSize += d.length() + 1;
+	}
+
+	for (auto d : MuaDllMap)
+	{
+		StringSize += d.second.length() + 3;
+	}
+
+	Result = StringSize + ImportDescSize + ImportThunkSize;
+
+	auto DosHeader = (PIMAGE_DOS_HEADER)RelocVa;
+	auto NtHeader = (PIMAGE_NT_HEADERS)CalcOffset(DosHeader, DosHeader->e_lfanew);
+	auto SectionHeader = IMAGE_FIRST_SECTION(NtHeader);
+
+	ULONG FileAlign = NtHeader->OptionalHeader.FileAlignment;
+	ULONG VirtualAlign = NtHeader->OptionalHeader.SectionAlignment;
+	VirtualAddress = SectionHeader[NtHeader->FileHeader.NumberOfSections - 1].VirtualAddress +
+		SectionHeader[NtHeader->FileHeader.NumberOfSections - 1].Misc.VirtualSize;
+	RawAddress = SectionHeader[NtHeader->FileHeader.NumberOfSections - 1].PointerToRawData +
+		SectionHeader[NtHeader->FileHeader.NumberOfSections - 1].SizeOfRawData;
+	RawSize = SetAlignment(Result, FileAlign);
+	VirtualSize = SetAlignment(RawSize, VirtualAlign);
+	
+	Log("Complete fix data\n");
+	Green;
+	LogT("New IAT VirtualAddress : %p\n", VirtualAddress);
+	LogT("New IAT VirtualSize: %X\n", VirtualSize);
+	LogT("New IAT RawAddress : %p\n", RawAddress);
+	LogT("New IAT RawSize : %X\n", RawSize);
+	Gray;
+}
+
+bool MutantAnalyzer::FixDataAlloc()
+{
+	Log("Setting New IAT data...\n");
+
+	VirtualFree(RelocVa, 0, MEM_RELEASE);
+	auto DosHeader = (PIMAGE_DOS_HEADER)TempFileVa;
+	auto NtHeader = (PIMAGE_NT_HEADERS)CalcOffset(DosHeader, DosHeader->e_lfanew);
+	auto SectionHeader = IMAGE_FIRST_SECTION(NtHeader);
+	DWORD SectionCount = NtHeader->FileHeader.NumberOfSections;
+	DWORD NewSectionCount = SectionCount + 1;
+
+	DWORD IatSize = VirtualAddress + VirtualSize;
+	DWORD Diff = 0;
+	FixVa = VirtualAlloc(RelocVa, IatSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (FixVa == nullptr)
+	{
+		if (GetLastError() == ERROR_INVALID_ADDRESS)
+		{
+			FixVa = VirtualAlloc(nullptr, IatSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+			Diff = (DWORD64)FixVa - (DWORD64)RelocVa;
+		}
+		else
+		{
+			ErrorHandler("Can't allocate memory", GetLastError());
+			return false;
+		}
+	}
+
+	memset(FixVa, 0, IatSize);
+	memcpy(FixVa, TempFileVa, NtHeader->OptionalHeader.SizeOfHeaders);
+	
+	auto FixDosHeader = (PIMAGE_DOS_HEADER)FixVa;
+	auto FixNtHeader = (PIMAGE_NT_HEADERS)CalcOffset(FixDosHeader, FixDosHeader->e_lfanew);
+	auto FixSectionHeader = IMAGE_FIRST_SECTION(FixNtHeader);
+
+	for (int i = 0; i < SectionCount; i++)
+	{
+		auto FixVirtualAddress = CalcOffset(FixVa, FixSectionHeader[i].VirtualAddress);
+		auto FixFromRawData = CalcOffset(TempFileVa, FixSectionHeader[i].PointerToRawData);
+		memcpy(FixVirtualAddress, FixFromRawData, FixSectionHeader[i].SizeOfRawData);
+	}
+
+	FixNtHeader->OptionalHeader.SizeOfImage = SetAlignment(IatSize, FixNtHeader->OptionalHeader.SectionAlignment);
+	FixNtHeader->FileHeader.NumberOfSections = NewSectionCount;
+	strcpy((char*)FixSectionHeader[NewSectionCount-1].Name, ".ShIAT");
+	FixSectionHeader[NewSectionCount - 1].VirtualAddress = VirtualAddress;
+	FixSectionHeader[NewSectionCount - 1].Misc.VirtualSize = VirtualSize;
+	FixSectionHeader[NewSectionCount - 1].PointerToRawData = RawAddress;
+	FixSectionHeader[NewSectionCount - 1].SizeOfRawData = RawSize;
+	FixSectionHeader[NewSectionCount - 1].Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+
+	FixNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress = VirtualAddress;
+	FixNtHeader->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].Size = ImportDescSize;
+
+	auto ImportDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)CalcOffset(FixVa, VirtualAddress);
+	auto ThunkStart = (DWORD*)CalcOffset(FixVa, VirtualAddress + ImportDescSize);
+	auto DllNameStart = CalcOffset(FixVa, VirtualAddress + ImportDescSize + ImportThunkSize);
+	auto ImportNameStart = CalcOffset(DllNameStart, ImportDllNameSize + ALIGNVALUE);
+
+	for (auto c : MuaCountMap)
+	{
+		ULONG ImportStringSize = 0;
+		ImportDescriptor->OriginalFirstThunk = (DWORD)CalcOffset(ThunkStart, (int)FixVa, true);
+		ImportDescriptor->Name = (DWORD)CalcOffset(DllNameStart, (int)FixVa, true);
+		ImportDescriptor->FirstThunk = ImportDescriptor->OriginalFirstThunk;
+
+		auto Name = (char*)CalcOffset(FixVa, ImportDescriptor->Name);
+		strcpy(Name, c.first.c_str());
+		for (auto dll : MuaDllMap)
+		{
+			if (c.first == dll.first)
+			{
+				auto NameStart = (char*)CalcOffset(ImportNameStart,2);
+				int NameLength = dll.second.length() + 1;
+				strncpy(NameStart, dll.second.c_str(), NameLength);
+				*ThunkStart = (DWORD)CalcOffset(ImportNameStart, (int)FixVa, true);
+				for (auto caller : MuaCallerMap)
+				{
+					if (dll.second == caller.first)
+					{
+						int offset = (DWORD64)ThunkStart - (Diff + (DWORD64)caller.second);
+						DWORD Operand = offset - 5;
+						memcpy(CalcOffset(caller.second,Diff+1), &Operand, 4);
+					}
+				}
+				ThunkStart = (DWORD*)CalcOffset(ThunkStart, ALIGNVALUE);
+				ImportNameStart = CalcOffset(ImportNameStart, dll.second.length() + 3);
+			}
+		}
+		ThunkStart = (DWORD*)CalcOffset(ThunkStart, ALIGNVALUE);
+		ImportDescriptor = (PIMAGE_IMPORT_DESCRIPTOR)CalcOffset(ImportDescriptor, sizeof(IMAGE_IMPORT_DESCRIPTOR));
+		DllNameStart = CalcOffset(DllNameStart, c.first.length() + 1);
+	}
+	Green;
+	LogT("New IAT data setup complete\n\n");
+	Gray;
+	return true;
+}
+
 std::vector<PVOID> MutantAnalyzer::GetCallerAddress()
 {
 	ULONG ReadSize = RawDataSize;
@@ -480,9 +630,36 @@ DWORD MutantAnalyzer::GetMutationResult32(DWORD* Address, DWORD Offset)
 	return Result;
 }
 
+char* MutantAnalyzer::FixDump(char* DumpData, DWORD* ReturnLength)
+{
+	auto DosHeader = (PIMAGE_DOS_HEADER)DumpData;
+	auto NtHeader = (PIMAGE_NT_HEADERS)CalcOffset(DosHeader, DosHeader->e_lfanew);
+	auto SectionHeader = (PIMAGE_SECTION_HEADER)((DWORD64)&NtHeader->OptionalHeader + NtHeader->FileHeader.SizeOfOptionalHeader);
+	ULONG SectionAlign = NtHeader->OptionalHeader.SectionAlignment;
+	ULONG FileAlign = NtHeader->OptionalHeader.FileAlignment;
+	ULONG FileSize = 0, HeaderSize = 0;
+
+	HeaderSize = NtHeader->OptionalHeader.SizeOfHeaders;
+	FileSize = SectionHeader[NtHeader->FileHeader.NumberOfSections - 1].PointerToRawData + SectionHeader[NtHeader->FileHeader.NumberOfSections - 1].SizeOfRawData;
+	
+
+	*ReturnLength = FileSize;
+	auto FixData = new char[FileSize];
+
+	// PE Section header fix complete
+	memcpy(FixData, DumpData, HeaderSize);
+	for (int i = 0; i < NtHeader->FileHeader.NumberOfSections; i++)
+	{
+		auto StartVa = CalcOffset(DumpData, SectionHeader[i].VirtualAddress, false);
+		memcpy(CalcOffset(FixData, SectionHeader[i].PointerToRawData, false), StartVa, SectionHeader[i].SizeOfRawData);
+	}
+	return FixData;
+}
+
 bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 {
 	ProcessId = Pid;
+	TargetFilePath = Path;
 
 	Log("Getting dump file handle...\n");
 	DumpHandle = CreateFile(Path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -535,9 +712,6 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	auto DosHeader = reinterpret_cast<PIMAGE_DOS_HEADER>(TempFileVa);
 	auto NtHeaders = reinterpret_cast<PIMAGE_NT_HEADERS>(CalcOffset(DosHeader, DosHeader->e_lfanew));
 	NtHeadersPtr = NtHeaders;
-	Red;
-	Log("%X\n", NtHeaders->OptionalHeader.ImageBase);
-	Gray;
 	if (DosHeader->e_magic != IMAGE_DOS_SIGNATURE || NtHeaders->Signature != IMAGE_NT_SIGNATURE)
 	{
 		ErrorHandler("Invalid PE format", -1);
@@ -552,7 +726,7 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 		{
 			RelocVa = VirtualAlloc(nullptr, NtHeaders->OptionalHeader.SizeOfImage, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 #ifdef _WIN64
-			BaseDiff = (DWORD64)RelocVa - NtHeaders->OptionalHeader.ImageBase
+			BaseDiff = (DWORD64)RelocVa - NtHeaders->OptionalHeader.ImageBase;
 #else
 			BaseDiff = (DWORD)RelocVa - NtHeaders->OptionalHeader.ImageBase;
 #endif
@@ -569,12 +743,10 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	InfoLog("Reloc V.A", RelocVa);
 	InfoLog("Reloc V.A End", RelocVaEnd);
 	InfoLog("Original", (PVOID)NtHeaders->OptionalHeader.ImageBase);
-	InfoLog("Diff", (PVOID)BaseDiff);
 
-
-
-	memcpy(RelocVa, TempFileVa, NtHeaders->FileHeader.SizeOfOptionalHeader);
+	memcpy(RelocVa, TempFileVa, NtHeaders->OptionalHeader.SizeOfHeaders);
 	PIMAGE_SECTION_HEADER SectionHeader = IMAGE_FIRST_SECTION(NtHeaders);
+	
 	for (int i = 0; i < NtHeaders->FileHeader.NumberOfSections; i++)
 	{
 		auto VirtualAddress = CalcOffset(RelocVa, SectionHeader[i].VirtualAddress);
@@ -583,6 +755,7 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 		if (SectionHeader[i].Characteristics & IMAGE_SCN_MEM_EXECUTE)
 		{
 			SectionVector.push_back(SectionHeader[i]);
+
 		}
 	}
 
@@ -612,10 +785,28 @@ void MutantAnalyzer::Analyzer()
 	if (SymbolInit() == true)
 	{
 #ifdef _WIN64
-		SymbolDownload();
+		if (ProcessId == 4)
+		{
+			SymbolDownload();
+		}
 #endif
 		SetMutationMap();
+		SetFixData();
+		if(FixDataAlloc() == false)
+		{
+			return;
+		}
+		ULONG ret = 0;
+		auto FixData = FixDump((char*)FixVa, &ret);
+		auto Path = std::filesystem::path(TargetFilePath);
+		std::ofstream FileStream(TargetFilePath + "_fix" + Path.extension().string(), std::ios::binary);
+		FileStream.write(FixData, ret);
+		FileStream.close();
 
+		
+		Blue;
+		Log("Save File Complete (https://shhoya.github.io)\n");
+		Gray;
 	}
 }
 
@@ -651,6 +842,11 @@ char* MutantAnalyzer::PatternScan(const char* Pattern, const char* Mask, char* B
 	return nullptr;
 }
 
+DWORD64 MutantAnalyzer::SetAlignment(ULONG64 Original, ULONG Alignment)
+{
+	return ((Original + Alignment - 1) / Alignment) * Alignment;
+}
+
 ShSymbols::~ShSymbols()
 {
 	if (ProcessHandle != nullptr)
@@ -679,8 +875,7 @@ bool ShSymbols::SymbolInit(ULONG Pid)
 	auto SymbolPath = std::filesystem::path(SymbolDir);
 	if (std::filesystem::exists(SymbolPath) == false)
 	{
-		ErrorHandler("Can't find path", -1);
-		return false;
+		std::filesystem::create_directory("Symbols");
 	}
 
 	strcpy(SymchkArguments, "/s SRV*");

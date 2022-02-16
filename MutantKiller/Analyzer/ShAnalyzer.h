@@ -35,7 +35,6 @@ class MutantAnalyzer : public ShSymbols
 public:
 	bool GetMutationPair();
 	void SetMutationMap();
-	bool IsMutationFunction(PVOID TargetAddress, ULONG Size);
 	void MutationCalculator(PVOID StartAddress, ULONG Size, PVOID Result);
 
 	void SetFixData();
@@ -47,13 +46,14 @@ public:
 	PVOID GetEndAddress32(DWORD StartAddress);
 	DWORD64 GetMutationResult64(DWORD64* Address, DWORD64 Offset);
 	DWORD GetMutationResult32(DWORD* Address, DWORD Offset);
-
+	char* FixDump(char* DumpData, DWORD* ReturnLength);
 
 	bool InitializeData(std::string Path, int Pid);
 	void Analyzer();
 
 	PVOID CalcOffset(PVOID Address, int Offset, bool bMinus = false);
 	char* PatternScan(const char* Pattern, const char* Mask, char* Begin, int Size);
+	DWORD64 SetAlignment(ULONG64 Original, ULONG Alignment);
 
 private:
 	ZydisDecoder ZyDecoder;
@@ -67,6 +67,8 @@ private:
 	PVOID RelocVaEnd = nullptr;
 	DWORD BaseDiff = 0;
 	PVOID StartVa = nullptr;
+	PVOID FixVa = nullptr;
+
 
 	PVOID TempFileVa = nullptr;
 
@@ -84,6 +86,8 @@ private:
 
 	ULONG MutationCount = 0;
 	bool bReturn = false;
+
+	std::string TargetFilePath;
 
 	std::vector<IMAGE_SECTION_HEADER> SectionVector;
 	std::pair<PVOID, PVOID>* MutationFinal = nullptr;
