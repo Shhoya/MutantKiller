@@ -153,6 +153,13 @@ void MutantAnalyzer::SetMutationMap()
 		if (ProcessId == SYSTEM_PROCESS)
 		{
 			SymName = GetKernelSymbolName(MutationFinal[i].second);
+			if (SymName.first != "NULL")
+			{
+				SymbolName = SymName.second;
+				SymbolSet.insert(make_pair(SymName.first, SymbolName));
+				MuaCallerMap.insert(make_pair(SymbolName, MutationFinal[i].first));
+				SymbolName.clear();
+			}
 		}
 		else
 		{
@@ -661,6 +668,48 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	ProcessId = Pid;
 	TargetFilePath = Path;
 
+	if (ProcessId == 4)
+	{
+		Log("Getting system module information...\n");
+		HMODULE NtModule = GetModuleHandle("ntdll.dll");
+		NtQuerySystemInformation_t NtQuerySystemInformation = (NtQuerySystemInformation_t)GetProcAddress(NtModule, "NtQuerySystemInformation");
+		if (NtQuerySystemInformation == nullptr)
+		{
+			ErrorHandler("Can't get NtQuerySystemInformation procedure", GetLastError());
+			return false;
+		}
+
+		PVOID Buffer = nullptr;
+		DWORD ReturnLength = 0;
+		ULONG Status = NtQuerySystemInformation(0xb, nullptr, 0, &ReturnLength);
+		if (Status == 0xC0000004)
+		{
+			Buffer = VirtualAlloc(nullptr,0x400*0x400, MEM_COMMIT|MEM_RESERVE, PAGE_READWRITE);
+			memset(Buffer, 0, 0x400*0x400);
+			Status = NtQuerySystemInformation(0xb, Buffer, ReturnLength, &ReturnLength);
+		}
+
+		if (Status != 0)
+		{
+			ErrorHandler("Can't get kernel module information", Status);
+			return false;
+		}
+		SYSTEM_MODULE_INFORMATION* ModInfo = (SYSTEM_MODULE_INFORMATION*)Buffer;
+		for (int i = 0; i < ModInfo->ModuleCount; i++)
+		{
+			if (strstr(ModInfo->Modules[i].FullPathName, "ntoskrnl.exe"))
+			{
+				Ntoskrnl = ModInfo->Modules[i].ImageBase;
+				break;
+			}
+		}
+		if (Ntoskrnl == 0)
+		{
+			ErrorHandler("Can't set ntosknrl base", -1);
+			return false;
+		}
+	}
+
 	Log("Getting dump file handle...\n");
 	DumpHandle = CreateFile(Path.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	if (DumpHandle == INVALID_HANDLE_VALUE)
@@ -747,6 +796,12 @@ bool MutantAnalyzer::InitializeData(std::string Path, int Pid)
 	memcpy(RelocVa, TempFileVa, NtHeaders->OptionalHeader.SizeOfHeaders);
 	PIMAGE_SECTION_HEADER SectionHeader = IMAGE_FIRST_SECTION(NtHeaders);
 	
+	if (SectionHeader[0].PointerToRawData == 0)
+	{
+		ErrorHandler("It is not a file dump file", -1);
+		return false;
+	}
+
 	for (int i = 0; i < NtHeaders->FileHeader.NumberOfSections; i++)
 	{
 		auto VirtualAddress = CalcOffset(RelocVa, SectionHeader[i].VirtualAddress);
@@ -934,7 +989,7 @@ void ShSymbols::SymbolDownload()
 				}
 			}
 		}
-		LogT("Donwload Complete\n");
+		printf("\n");
 	}
 	else
 	{
@@ -945,7 +1000,45 @@ void ShSymbols::SymbolDownload()
 std::pair<std::string, char*> ShSymbols::GetKernelSymbolName(PVOID Address)
 {
 	std::pair<std::string, char*> Result;
+	IMAGEHLP_SYMBOL64* pSym = NULL;
+	char buffer[sizeof(IMAGEHLP_SYMBOL64) + MAX_SYM_NAME * sizeof(TCHAR)] = { 0 };
+	pSym = (IMAGEHLP_SYMBOL64*)buffer;
 
+	pSym->SizeOfStruct = sizeof(IMAGEHLP_SYMBOL64);
+	pSym->MaxNameLength = MAX_PATH;
+	DWORD64 dwDisplacement64 = 0;
+
+	IMAGEHLP_MODULEW64 pMod = { 0, };
+	pMod.SizeOfStruct = sizeof(IMAGEHLP_MODULEW64);
+
+	char FilePath[MAX_PATH] = { 0, };
+	DWORD64 BaseAddress = 0;
+
+	strcpy(FilePath, "C:\\Windows\\System32\\ntoskrnl.exe");
+	BaseAddress = (DWORD64)Ntoskrnl;
+
+	HANDLE hFile = CreateFile("C:\\Windows\\System32\\ntoskrnl.exe", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	if (hFile == nullptr || hFile == INVALID_HANDLE_VALUE) {
+		ErrorHandler("Can't open file", GetLastError());
+		Result.first = "NULL";
+		return Result;
+	}
+
+	SymLoadModuleEx(ProcessHandle, hFile, "kernel", "kernel", BaseAddress, 0, nullptr, 0);
+	bool result = SymGetModuleInfoW64(ProcessHandle, (DWORD64)Address, &pMod);
+	if (result == true)
+	{
+		result = SymGetSymFromAddr64(ProcessHandle, (DWORD64)Address, &dwDisplacement64, pSym);
+		if (result == true)
+		{
+			Result.first = "ntoskrnl";
+			Result.second = pSym->Name;
+			CloseHandle(hFile);
+			return Result;
+		}
+	}
+	CloseHandle(hFile);
+	Result.first = "NULL";
 	return Result;
 }
 

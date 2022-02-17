@@ -5,6 +5,31 @@
 
 #define SYSTEM_PROCESS 4
 
+typedef struct _SYSTEM_MODULE {
+	HANDLE Section;
+	PVOID MappedBase;
+	PVOID ImageBase;
+	ULONG ImageSize;
+	ULONG Flags;
+	USHORT LoadOrderIndex;
+	USHORT InitOrderIndex;
+	USHORT LoadCount;
+	USHORT OffsetToFileName;
+	char FullPathName[256];
+}SYSTEM_MODULE, *PSYSTEM_MODULE;
+
+typedef struct _SYSTEM_MODULE_INFORMATION{
+	ULONG ModuleCount;
+	SYSTEM_MODULE Modules[1];
+}SYSTEM_MODULE_INFORMATION, *PSYSTEM_MODULE_INFORMATION;
+
+typedef NTSTATUS(NTAPI* NtQuerySystemInformation_t)(
+	ULONG SystemInformationClass,
+	PVOID SystemInformation,
+	ULONG SystemInformationLength,
+	PULONG ReturnLength
+	);
+
 class ShSymbols
 {
 public:
@@ -15,6 +40,7 @@ public:
 	std::pair<std::string, char*> GetSymbolName(PVOID Address);
 
 public:
+	PVOID Ntoskrnl = nullptr;
 	HANDLE ProcessHandle = nullptr;
 	ULONG ProcessId = 0;
 	char SymbolDir[MAX_PATH] = { 0, };
@@ -56,6 +82,7 @@ public:
 	DWORD64 SetAlignment(ULONG64 Original, ULONG Alignment);
 
 private:
+
 	ZydisDecoder ZyDecoder;
 	ZydisFormatter ZyFormatter;
 

@@ -121,7 +121,7 @@
       <AdditionalIncludeDirectories>C:\Users\hunho\source\repos\MutantKiller\MutantKiller\ThirdParty\ZydisLib;C:\Users\hunho\source\repos\MutantKiller\MutantKiller\ThirdParty;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <Optimization>MinSpace</Optimization>
       <WholeProgramOptimization>true</WholeProgramOptimization>
-      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary>MultiThreadedDLL</RuntimeLibrary>
       <ExceptionHandling>Sync</ExceptionHandling>
       <BufferSecurityCheck>true</BufferSecurityCheck>
     </ClCompile>
@@ -137,7 +137,8 @@
       </StackCommitSize>
       <StackReserveSize>
       </StackReserveSize>
-      <HeapReserveSize>209715200</HeapReserveSize>
+      <HeapReserveSize>
+      </HeapReserveSize>
       <RandomizedBaseAddress>false</RandomizedBaseAddress>
       <FixedBaseAddress>true</FixedBaseAddress>
       <BaseAddress>0x800000</BaseAddress>
