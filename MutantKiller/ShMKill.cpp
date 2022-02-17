@@ -19,40 +19,6 @@ int main(int argc, char* argv[])
 	}
 
 	MuA->Analyzer();
-
-	
-
-	/*ZyanU8 data[] =
-	{
-		0x51, 0x8D, 0x45, 0xFF, 0x50, 0xFF, 0x75, 0x0C, 0xFF, 0x75,
-		0x08, 0xFF, 0x15, 0xA0, 0xA5, 0x48, 0x76, 0x85, 0xC0, 0x0F,
-		0x88, 0xFC, 0xDA, 0x02, 0x00
-	};
-
-	ZydisDecoder decoder;
-	ZydisDecoderInit(&decoder, ZYDIS_MACHINE_MODE_LONG_64, ZYDIS_ADDRESS_WIDTH_64);
-
-	ZydisFormatter formatter;
-	ZydisFormatterInit(&formatter, ZYDIS_FORMATTER_STYLE_INTEL);
-
-	ZyanU64 runtime_address = 0x007FFFFFFF400000;
-	ZyanUSize offset = 0;
-	const ZyanUSize length = sizeof(data);
-	ZydisDecodedInstruction instruction;
-	while (ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(&decoder, data + offset, length - offset,
-		&instruction)))
-	{
-		printf("%016" PRIX64 "  ", runtime_address);
-
-		char buffer[256];
-		ZydisFormatterFormatInstruction(&formatter, &instruction, buffer, sizeof(buffer),
-			runtime_address);
-		puts(buffer);
-
-		offset += instruction.length;
-		runtime_address += instruction.length;
-	}*/
-
 	return 0;
 }
 
